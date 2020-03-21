@@ -5,3 +5,5 @@ hiddenlayer/
 .ipynb_checkpoints/
 __pycache__
 *.prototxt
+.vscode/
+*.egg-info
