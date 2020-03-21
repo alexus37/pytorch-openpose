@@ -10,22 +10,51 @@ from torchvision import transforms
 
 from torch_openpose import util
 from torch_openpose.model import bodypose_model
+model_path_dict = {
+    'model/body_pose_model.pth': 'model/body_pose_model.pth',
+    'model/hand_pose_model.pth': 'model/hand_pose_model.pth'
+}
+
 
 class Body(object):
-    def __init__(self, model_path):
+    def __init__(self, model_path, useGPU=False):
         self.model = bodypose_model()
-        if torch.cuda.is_available():
+        self.useGPU = useGPU
+        if torch.cuda.is_available() and useGPU:
             self.model = self.model.cuda()
+        else:
+            self.model = self.model.cpu()
         model_dict = util.transfer(self.model, torch.load(model_path))
         self.model.load_state_dict(model_dict)
         self.model.eval()
+        self.stride = 8
+        self.padValue = 128
+
+    def compute_heatmap(self, input_tensor):
+        _, heat_tensor = self.model(input_tensor)
+        heat_tensor_np = heat_tensor.cpu().detach().numpy()
+
+        heatmap = np.transpose(np.squeeze(heat_tensor_np), (1, 2, 0))  # output 1 is heatmaps
+        return heatmap, heat_tensor
+
+    def compute_paf(self, input_tensor):
+        paf_tensor, _ = self.model(input_tensor)
+        paf_tensor_np = paf_tensor.cpu().detach().numpy()
+
+        paf = np.transpose(np.squeeze(paf_tensor_np), (1, 2, 0))  # output 1 is heatmaps
+        return paf, paf_tensor
+
+    def image_to_input_tensor(self, imageToTest):
+        imageToTest_padded, pad = util.padRightDownCorner(imageToTest, self.stride, self.padValue)
+        im = np.transpose(np.float32(imageToTest_padded[:, :, :, np.newaxis]), (3, 2, 0, 1)) / 256 - 0.5
+        im = np.ascontiguousarray(im)
+
+        return torch.from_numpy(im).float()
 
     def __call__(self, oriImg):
         # scale_search = [0.5, 1.0, 1.5, 2.0]
-        scale_search = [0.5]
+        scale_search = [1.0]
         boxsize = 368
-        stride = 8
-        padValue = 128
         thre1 = 0.1
         thre2 = 0.05
         multiplier = [x * boxsize / oriImg.shape[0] for x in scale_search]
@@ -35,12 +64,12 @@ class Body(object):
         for m in range(len(multiplier)):
             scale = multiplier[m]
             imageToTest = cv2.resize(oriImg, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-            imageToTest_padded, pad = util.padRightDownCorner(imageToTest, stride, padValue)
+            imageToTest_padded, pad = util.padRightDownCorner(imageToTest, self.stride, self.padValue)
             im = np.transpose(np.float32(imageToTest_padded[:, :, :, np.newaxis]), (3, 2, 0, 1)) / 256 - 0.5
             im = np.ascontiguousarray(im)
 
             data = torch.from_numpy(im).float()
-            if torch.cuda.is_available():
+            if torch.cuda.is_available() and self.useGPU:
                 data = data.cuda()
             # data = data.permute([2, 0, 1]).unsqueeze(0).float()
             with torch.no_grad():
@@ -51,13 +80,13 @@ class Body(object):
             # extract outputs, resize, and remove padding
             # heatmap = np.transpose(np.squeeze(net.blobs[output_blobs.keys()[1]].data), (1, 2, 0))  # output 1 is heatmaps
             heatmap = np.transpose(np.squeeze(Mconv7_stage6_L2), (1, 2, 0))  # output 1 is heatmaps
-            heatmap = cv2.resize(heatmap, (0, 0), fx=stride, fy=stride, interpolation=cv2.INTER_CUBIC)
+            heatmap = cv2.resize(heatmap, (0, 0), fx=self.stride, fy=self.stride, interpolation=cv2.INTER_CUBIC)
             heatmap = heatmap[:imageToTest_padded.shape[0] - pad[2], :imageToTest_padded.shape[1] - pad[3], :]
             heatmap = cv2.resize(heatmap, (oriImg.shape[1], oriImg.shape[0]), interpolation=cv2.INTER_CUBIC)
 
             # paf = np.transpose(np.squeeze(net.blobs[output_blobs.keys()[0]].data), (1, 2, 0))  # output 0 is PAFs
             paf = np.transpose(np.squeeze(Mconv7_stage6_L1), (1, 2, 0))  # output 0 is PAFs
-            paf = cv2.resize(paf, (0, 0), fx=stride, fy=stride, interpolation=cv2.INTER_CUBIC)
+            paf = cv2.resize(paf, (0, 0), fx=self.stride, fy=self.stride, interpolation=cv2.INTER_CUBIC)
             paf = paf[:imageToTest_padded.shape[0] - pad[2], :imageToTest_padded.shape[1] - pad[3], :]
             paf = cv2.resize(paf, (oriImg.shape[1], oriImg.shape[0]), interpolation=cv2.INTER_CUBIC)
 
